@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LEXINX Lua Obfuscator</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#000;color:#eee;font-family:Arial,sans-serif}
+.wrap{width:min(1450px,95%);margin:24px auto}
+h1{margin:0 0 6px;background:linear-gradient(45deg,#ff0000,#ff7300,#fffb00,#48ff00,#00ffd5,#002bff,#7a00ff,#ff00c8,#ff0000);background-size:200% auto;-webkit-background-clip:text;background-clip:text;color:transparent;animation:rainbow 5s linear infinite}
+@keyframes rainbow{from{background-position:0 50%}to{background-position:200% 50%}}
+.sub{color:#888;margin-bottom:18px}
+.badge{display:inline-block;padding:3px 8px;border-radius:4px;background:#0a2a0a;color:#8cff9b;font-size:12px;margin-left:8px}
+.badge.err{background:#2a0a0a;color:#ff7777}
+.badge.warn{background:#2a2a0a;color:#ffcc66}
+.options{display:flex;flex-wrap:wrap;gap:12px;padding:12px;margin-bottom:14px;background:#0a0a0a;border:1px solid #333;border-radius:10px}
+.options label{display:flex;gap:7px;align-items:center;color:#bbb}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.panel{background:#0a0a0a;border:1px solid #333;border-radius:12px;padding:12px}
+.title{color:#aaa;margin-bottom:8px}
+textarea{width:100%;height:660px;resize:vertical;background:#000;color:#ddd;border:1px solid #303030;border-radius:8px;outline:none;padding:13px;font:13px/1.5 Consolas,monospace}
+textarea:focus{border-color:#666}
+.buttons{display:flex;flex-wrap:wrap;gap:9px;margin-top:14px}
+button{border:0;border-radius:8px;padding:11px 17px;font-weight:bold;cursor:pointer;background:#eee;color:#111}
+button.secondary{background:#202020;color:#eee;border:1px solid #333}
+button:hover{opacity:.86}
+button:disabled{opacity:.4;cursor:not-allowed}
+.status{margin-top:14px;background:#0a0a0a;border:1px solid #333;border-radius:9px;padding:12px;color:#aaa;white-space:pre-wrap;font:12px/1.5 Consolas,monospace}
+.ok{color:#8cff9b}.err{color:#ff7777}.warn{color:#ffcc66}
+@media(max-width:850px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>LEXINX LUA OBFUSCATOR</h1>
+<div class="sub">
+    Backend Vercel serverless • luac.wasm compile • dual-VM packer
+    <span id="status-badge" class="badge">đang kiểm tra...</span>
+</div>
+
+<div class="options">
+<label><input id="singleLine" type="checkbox"> Output 1 dòng</label>
+<label><input id="dualVM" type="checkbox" checked> Dual-VM</label>
+<label><input id="fragment" type="checkbox" checked> Phân mảnh</label>
+<label><input id="shuffle" type="checkbox" checked> Hoán vị</label>
+<label><input id="multiPass" type="checkbox" checked> Nhiều lượt</label>
+<label><input id="poly" type="checkbox" checked> Prelude đa hình</label>
+<label><input id="fuse" type="checkbox" checked> Hợp nhất</label>
+<label><input id="antiHook" type="checkbox" checked> Anti-hook</label>
+<label><input id="flatten" type="checkbox" checked> Flatten</label>
+<label><input id="stripComments" type="checkbox" checked> Xóa chú thích</label>
+<label><input id="perOpKey" type="checkbox" checked> Per-opcode key</label>
+</div>
+
+<div class="grid">
+<div class="panel">
+<div class="title">Lua 5.1 source</div>
+<textarea id="input" spellcheck="false" placeholder="Dán Lua 5.1 vào đây..."></textarea>
+</div>
+<div class="panel">
+<div class="title">Output (marker: -- This script is by lexinx v3)</div>
+<textarea id="output" readonly spellcheck="false" placeholder="Kết quả..."></textarea>
+</div>
+</div>
+
+<div class="buttons">
+<button id="btn-build" onclick="build()">OBFUSCATE</button>
+<button class="secondary" onclick="copyOutput()">COPY</button>
+<button class="secondary" onclick="downloadOutput()">TẢI XUỐNG</button>
+<button class="secondary" onclick="clearAll()">XÓA</button>
+</div>
+<div id="status" class="status">Sẵn sàng.</div>
+</div>
+
+<script>
+"use strict";
+
+const $ = id => document.getElementById(id);
+
+async function checkStatus(){
+    const b = $("status-badge");
+    try{
+        const r = await fetch("/api/status", { cache: "no-store" });
+        if(!r.ok){
+            b.textContent = "server " + r.status;
+            b.className = "badge err";
+            return;
+        }
+        const j = await r.json();
+        if(j.luac === "available" || j.luac === "wasm"){
+            b.textContent = "luac.wasm OK";
+            b.className = "badge";
+        }else{
+            b.textContent = "luac MISSING — fallback";
+            b.className = "badge warn";
+        }
+    }catch(e){
+        b.textContent = "server offline";
+        b.className = "badge err";
+    }
+}
+
+async function build(){
+    const src = $("input").value;
+    if(!src.trim()){
+        setStatus("Đầu vào rỗng.", "err");
+        return;
+    }
+
+    const opts = {
+        singleLine: $("singleLine").checked,
+        dualVM: $("dualVM").checked,
+        fragment: $("fragment").checked,
+        shuffle: $("shuffle").checked,
+        multiPass: $("multiPass").checked,
+        poly: $("poly").checked,
+        fuse: $("fuse").checked,
+        antiHook: $("antiHook").checked,
+        flatten: $("flatten").checked,
+        stripComments: $("stripComments").checked,
+        perOpKey: $("perOpKey").checked
+    };
+
+    $("btn-build").disabled = true;
+    setStatus("Đang build trên server...", "warn");
+
+    try{
+        const r = await fetch("/api/obfuscate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ source: src, options: opts })
+        });
+
+        let j;
+        try{
+            j = await r.json();
+        }catch(_){
+            setStatus("Server trả về không phải JSON. HTTP " + r.status, "err");
+            return;
+        }
+
+        if(!j.ok){
+            setStatus("LỖI: " + (j.error || "unknown"), "err");
+            return;
+        }
+
+        $("output").value = j.output;
+        const st = j.stats || {};
+        setStatus(
+            "BUILD THÀNH CÔNG\n" +
+            "luac: " + (j.luacUsed ? "WASM NATIVE" : "FALLBACK") + "\n" +
+            "Source bytes: " + (st.sourceBytes || 0) + "\n" +
+            "Bytecode bytes: " + (st.bytecodeBytes || 0) + "\n" +
+            "Output bytes: " + (st.outputBytes || 0) + "\n" +
+            "Passes: " + (st.passes || 0) + "\n" +
+            "Marker: -- This script is by lexinx v3",
+            "ok"
+        );
+    }catch(e){
+        setStatus("Lỗi kết nối: " + e.message, "err");
+    }finally{
+        $("btn-build").disabled = false;
+    }
+}
+
+function setStatus(msg, cls){
+    const s = $("status");
+    s.textContent = msg;
+    s.className = "status" + (cls ? " " + cls : "");
+}
+
+async function copyOutput(){
+    const o = $("output");
+    if(!o.value) return;
+    try{
+        await navigator.clipboard.writeText(o.value);
+        setStatus("Đã copy.", "ok");
+    }catch(_){
+        o.select();
+        document.execCommand("copy");
+        setStatus("Đã copy.", "ok");
+    }
+}
+
+function downloadOutput(){
+    const out = $("output").value;
+    if(!out) return;
+    const blob = new Blob([out], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "lexinx_output.lua";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+}
+
+function clearAll(){
+    $("input").value = "";
+    $("output").value = "";
+    setStatus("Sẵn sàng.", "");
+}
+
+checkStatus();
+</script>
+</body>
+</html>
