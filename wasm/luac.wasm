@@ -1,0 +1,105 @@
+# 1. Cài emscripten
+git clone https://github.com/emscripten-core/emsdk.git
+cd emsdk
+./emsdk install latest
+./emsdk activate latest
+source ./emsdk_env.sh
+
+# 2. Tải Lua 5.1.5
+git clone https://github.com/lua/lua.git /tmp/lua-5.1.5
+cd /tmp/lua-5.1.5
+git checkout v5.1.5
+
+# 3. Viết entry point
+cat > lexinx_luac.c <<'EOF'
+#include <stdlib.h>
+#include <string.h>
+#include <emscripten.h>
+
+/* Lua headers */
+#include "lua.h"
+#include "lauxlib.h"
+#include "lualib.h"
+#include "ldebug.h"
+#include "lundump.h"
+
+static unsigned char* g_buf = NULL;
+static int g_len = 0;
+
+/* dump writer — ghi bytecode vào buffer */
+typedef struct {
+    unsigned char* data;
+    int len;
+    int cap;
+} DumpBuf;
+
+static int writer(lua_State* L, const void* p, size_t sz, void* ud){
+    (void)L;
+    DumpBuf* b = (DumpBuf*)ud;
+    if(b->len + (int)sz > b->cap){
+        int newcap = (b->cap + (int)sz) * 2 + 64;
+        unsigned char* nd = (unsigned char*)realloc(b->data, newcap);
+        if(!nd) return 1;
+        b->data = nd;
+        b->cap = newcap;
+    }
+    memcpy(b->data + b->len, p, sz);
+    b->len += (int)sz;
+    return 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int luac_compile(const char* src, int srcLen){
+    lua_State* L = luaL_newstate();
+    if(!L) return -1;
+
+    if(luaL_loadbuffer(L, src, srcLen, "@input") != 0){
+        lua_close(L);
+        return -1;
+    }
+
+    /* lấy function vừa load */
+    DumpBuf buf = { NULL, 0, 0 };
+    int r = lua_dump(L, writer, &buf);
+    if(r != 0){
+        free(buf.data);
+        lua_close(L);
+        return -1;
+    }
+
+    if(g_buf) free(g_buf);
+    g_buf = buf.data;
+    g_len = buf.len;
+
+    lua_close(L);
+    return 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+unsigned char* get_buffer(void){ return g_buf; }
+
+EMSCRIPTEN_KEEPALIVE
+int get_buffer_len(void){ return g_len; }
+EOF
+
+# 4. Build
+emcc lexinx_luac.c \
+    src/lapi.c src/lcode.c src/ldebug.c src/ldo.c src/ldump.c \
+    src/lfunc.c src/lgc.c src/llex.c src/lmem.c src/lobject.c \
+    src/lopcodes.c src/lparser.c src/lstate.c src/lstring.c \
+    src/ltable.c src/ltm.c src/lundump.c src/lvm.c src/lzio.c \
+    src/lauxlib.c src/lbaselib.c src/ldblib.c src/liolib.c \
+    src/lmathlib.c src/loslib.c src/ltablib.c src/lstrlib.c \
+    src/loadlib.c src/linit.c \
+    -I src \
+    -O3 \
+    -s WASM=1 \
+    -s EXPORTED_FUNCTIONS='["_luac_compile","_get_buffer","_get_buffer_len","_malloc","_free"]' \
+    -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
+    -s ALLOW_MEMORY_GROWTH=1 \
+    -s STANDALONE_WASM=1 \
+    --no-entry \
+    -o luac.wasm
+
+# 5. Copy vào repo
+cp luac.wasm /path/to/lexinx-vercel/wasm/luac.wasm
